@@ -20,6 +20,7 @@ import argparse
 import LoadData as DATA
 from tensorflow.contrib.layers.python.layers import batch_norm as batch_norm
 
+
 #################### Arguments ####################
 def parse_args():
     parser = argparse.ArgumentParser(description="Run DeepFM.")
@@ -42,7 +43,7 @@ def parse_args():
     parser.add_argument('--lamda', type=float, default=0,
                         help='Regularizer for bilinear part.')
     parser.add_argument('--keep', type=float, default=0.7,
-                    help='Keep probility (1-dropout) for the bilinear interaction layer. 1: no dropout')
+                        help='Keep probility (1-dropout) for the bilinear interaction layer. 1: no dropout')
     parser.add_argument('--lr', type=float, default=0.01,
                         help='Learning rate.')
     parser.add_argument('--optimizer', nargs='?', default='AdagradOptimizer',
@@ -50,9 +51,10 @@ def parse_args():
     parser.add_argument('--verbose', type=int, default=1,
                         help='Whether to show the performance of each epoch (0 or 1)')
     parser.add_argument('--batch_norm', type=int, default=1,
-                    help='Whether to perform batch normaization (0 or 1)')
+                        help='Whether to perform batch normaization (0 or 1)')
 
     return parser.parse_args()
+
 
 class FM(BaseEstimator, TransformerMixin):
     def __init__(self, features_M, pretrain_flag, save_file, hidden_factor, epoch, batch_size, learning_rate, lamda_bilinear, keep,
@@ -98,38 +100,38 @@ class FM(BaseEstimator, TransformerMixin):
             # Model.
             # get the summed up embeddings of features.
             self.nonzero_embeddings = tf.nn.embedding_lookup(self.weights['feature_embeddings'], self.train_features, name='nonzero_embeddings')
-            self.summed_features_emb = tf.reduce_sum(self.nonzero_embeddings, 1, keep_dims=True) # None * 1 * K
+            self.summed_features_emb = tf.reduce_sum(self.nonzero_embeddings, 1, keep_dims=True)  # None * 1 * K
             # get the element-multiplication
             self.summed_features_emb_square = tf.square(self.summed_features_emb)  # None * 1 * K
-  
+
             # _________ square_sum part _____________
             self.squared_features_emb = tf.square(self.nonzero_embeddings)
             self.squared_sum_features_emb = tf.reduce_sum(self.squared_features_emb, 1, keep_dims=True)  # None * 1 * K
-  
+
             # ________ FM __________
             self.FM = 0.5 * tf.subtract(self.summed_features_emb_square, self.squared_sum_features_emb, name="fm")  # None * 1 * K
 
-#             element_wise_product_list = []
-#             count = 0
-#             for i in range(0, 3):
-#                 for j in range(i+1, 3):
-#                     element_wise_product_list.append(tf.multiply(self.nonzero_embeddings[:,i,:], self.nonzero_embeddings[:,j,:]))
-#                     count += 1
-#             self.element_wise_product = tf.stack(element_wise_product_list) # (M'*(M'-1)) * None * K
-#             self.element_wise_product = tf.transpose(self.element_wise_product, perm=[1,0,2], name="element_wise_product") # None * (M'*(M'-1)) * K
-#             self.interactions = tf.reduce_sum(self.element_wise_product, 1, name="interactions")
-#               
-#             print(self.interactions)
-#             self.FM = tf.expand_dims(self.interactions, 1)
-#             print(self.FM)
+            #             element_wise_product_list = []
+            #             count = 0
+            #             for i in range(0, 3):
+            #                 for j in range(i+1, 3):
+            #                     element_wise_product_list.append(tf.multiply(self.nonzero_embeddings[:,i,:], self.nonzero_embeddings[:,j,:]))
+            #                     count += 1
+            #             self.element_wise_product = tf.stack(element_wise_product_list) # (M'*(M'-1)) * None * K
+            #             self.element_wise_product = tf.transpose(self.element_wise_product, perm=[1,0,2], name="element_wise_product") # None * (M'*(M'-1)) * K
+            #             self.interactions = tf.reduce_sum(self.element_wise_product, 1, name="interactions")
+            #
+            #             print(self.interactions)
+            #             self.FM = tf.expand_dims(self.interactions, 1)
+            #             print(self.FM)
             # ml-tag has 3 interactions. divided by 3 to make sure that the sum of the weights is 1
             if self.micro_level_analysis:
                 self.FM = self.FM / 3.0
             if self.batch_norm and not self.micro_level_analysis:
                 self.FM = self.batch_norm_layer(self.FM, train_phase=self.train_phase, scope_bn='bn_fm')
-            self.FM_OUT = tf.reduce_sum(self.FM, 1, name="fm_out") # None * K
+            self.FM_OUT = tf.reduce_sum(self.FM, 1, name="fm_out")  # None * K
             print("self.FM_OUT = " + str(self.FM_OUT))
-            self.FM_OUT = tf.nn.dropout(self.FM_OUT, self.dropout_keep) # dropout at the FM layer
+            self.FM_OUT = tf.nn.dropout(self.FM_OUT, self.dropout_keep)  # dropout at the FM layer
 
             # _________out _________
             if self.micro_level_analysis:
@@ -137,7 +139,7 @@ class FM(BaseEstimator, TransformerMixin):
                 self.out = tf.reduce_sum(self.FM_OUT, 1, keep_dims=True, name="out")  # None * 1
             else:
                 Bilinear = tf.reduce_sum(self.FM_OUT, 1, keep_dims=True)  # None * 1
-                self.Feature_bias = tf.reduce_sum(tf.nn.embedding_lookup(self.weights['feature_bias'], self.train_features) , 1)  # None * 1
+                self.Feature_bias = tf.reduce_sum(tf.nn.embedding_lookup(self.weights['feature_bias'], self.train_features), 1)  # None * 1
                 Bias = self.weights['bias'] * tf.ones_like(self.train_labels)  # None * 1
                 self.out = tf.add_n([Bilinear, self.Feature_bias, Bias], name="out")  # None * 1
 
@@ -166,7 +168,7 @@ class FM(BaseEstimator, TransformerMixin):
             # number of params
             total_parameters = 0
             for variable in list(self.weights.values()):
-                shape = variable.get_shape() # shape is an array of tf.Dimension
+                shape = variable.get_shape()  # shape is an array of tf.Dimension
                 variable_parameters = 1
                 for dim in shape:
                     variable_parameters *= dim.value
@@ -176,9 +178,9 @@ class FM(BaseEstimator, TransformerMixin):
 
     def _init_session(self):
         # adaptively growing video memory
-#         config = tf.ConfigProto(
-#             device_count = {'GPU': 0}
-#             )
+        #         config = tf.ConfigProto(
+        #             device_count = {'GPU': 0}
+        #             )
         config = tf.ConfigProto()
         config.gpu_options.allow_growth = True
         return tf.Session(config=config)
@@ -201,18 +203,19 @@ class FM(BaseEstimator, TransformerMixin):
             all_weights['bias'] = tf.Variable(b, dtype=tf.float32, name='bias')
         else:
             all_weights['feature_embeddings'] = tf.Variable(
-                tf.random_normal([self.features_M, self.hidden_factor], 0.0, 0.01),
+                tf.random_normal([self.features_M, self.hidden_factor], 0.0, 0.01),  # 正态分布
                 name='feature_embeddings')  # features_M * K
             all_weights['feature_bias'] = tf.Variable(
-                tf.random_uniform([self.features_M, 1], 0.0, 0.0), name='feature_bias')  # features_M * 1
+                tf.random_uniform([self.features_M, 1], 0.0, 0.0),  # 均匀分布
+                name='feature_bias')  # features_M * 1
             all_weights['bias'] = tf.Variable(tf.constant(0.0), name='bias')  # 1 * 1
         return all_weights
 
     def batch_norm_layer(self, x, train_phase, scope_bn):
         bn_train = batch_norm(x, decay=0.9, center=True, scale=True, updates_collections=None,
-            is_training=True, reuse=None, trainable=True, scope=scope_bn)
+                              is_training=True, reuse=None, trainable=True, scope=scope_bn)
         bn_inference = batch_norm(x, decay=0.9, center=True, scale=True, updates_collections=None,
-            is_training=False, reuse=True, trainable=True, scope=scope_bn)
+                                  is_training=False, reuse=True, trainable=True, scope=scope_bn)
         z = tf.cond(train_phase, lambda: bn_train, lambda: bn_inference)
         return z
 
@@ -223,7 +226,7 @@ class FM(BaseEstimator, TransformerMixin):
 
     def get_random_block_from_data(self, data, batch_size):  # generate a random block of training data
         start_index = np.random.randint(0, len(data['Y']) - batch_size)
-        X , Y = [], []
+        X, Y = [], []
         # forward get sample
         i = start_index
         while len(X) < batch_size and i < len(data['X']):
@@ -244,7 +247,7 @@ class FM(BaseEstimator, TransformerMixin):
                 break
         return {'X': X, 'Y': Y}
 
-    def shuffle_in_unison_scary(self, a, b): # shuffle two lists simutaneously
+    def shuffle_in_unison_scary(self, a, b):  # shuffle two lists simutaneously
         rng_state = np.random.get_state()
         np.random.shuffle(a)
         np.random.set_state(rng_state)
@@ -256,8 +259,8 @@ class FM(BaseEstimator, TransformerMixin):
             t2 = time()
             init_train = self.evaluate(Train_data)
             init_valid = self.evaluate(Validation_data)
-            init_test  = self.evaluate(Test_data)
-            print(("Init: \t train=%.4f, validation=%.4f, test=%.4f [%.1f s]" %(init_train, init_valid, init_test, time()-t2)))
+            init_test = self.evaluate(Test_data)
+            print(("Init: \t train=%.4f, validation=%.4f, test=%.4f [%.1f s]" % (init_train, init_valid, init_test, time() - t2)))
 
         for epoch in range(self.epoch):
             t1 = time()
@@ -272,21 +275,21 @@ class FM(BaseEstimator, TransformerMixin):
             # output validation
             train_result = self.evaluate(Train_data)
             valid_result = self.evaluate(Validation_data)
-            test_result  = self.evaluate(Test_data)
+            test_result = self.evaluate(Test_data)
 
             self.train_rmse.append(train_result)
             self.valid_rmse.append(valid_result)
             self.test_rmse.append(test_result)
 
-            if self.verbose > 0 and epoch%self.verbose == 0:
+            if self.verbose > 0 and epoch % self.verbose == 0:
                 print(("Epoch %d [%.1f s]\ttrain=%.4f, validation=%.4f, Test=%.4f [%.1f s]"
-                      %(epoch+1, t2-t1, train_result, valid_result, test_result, time()-t2)))
-#             if self.eva_termination(self.valid_rmse):
-#                 break
-# 
-         if self.pretrain_flag < 0:
-             print("Save model to file as pretrain.")
-             self.saver.save(self.sess, self.save_file)
+                       % (epoch + 1, t2 - t1, train_result, valid_result, test_result, time() - t2)))
+            #             if self.eva_termination(self.valid_rmse):
+            #                 break
+            #
+        if self.pretrain_flag < 0:
+            print("Save model to file as pretrain.")
+            self.saver.save(self.sess, self.save_file)
 
     def eva_termination(self, valid):
         if len(valid) > 5:
@@ -305,29 +308,33 @@ class FM(BaseEstimator, TransformerMixin):
         predictions_bounded = np.minimum(predictions_bounded, np.ones(num_example) * max(y_true))  # bound the higher values
         RMSE = math.sqrt(mean_squared_error(y_true, predictions_bounded))
         return RMSE
+
+
 #         AUC = roc_auc_score(y_true, predictions_bounded)
 #         return AUC
 
 
 def make_save_file(args):
-    pretrain_path = '../pretrain/fm_%s_%d' %(args.dataset, args.hidden_factor)
+    pretrain_path = '../pretrain/fm_%s_%d' % (args.dataset, args.hidden_factor)
     if args.mla:
         pretrain_path += '_mla'
     if not os.path.exists(pretrain_path):
         os.makedirs(pretrain_path)
-    save_file = pretrain_path+'/%s_%d' %(args.dataset, args.hidden_factor)
+    save_file = pretrain_path + '/%s_%d' % (args.dataset, args.hidden_factor)
     return save_file
+
 
 def train(args):
     # Data loading
     data = DATA.LoadData(args.path, args.dataset)
     if args.verbose > 0:
         print(("FM: dataset=%s, factors=%d, #epoch=%d, batch=%d, lr=%.4f, lambda=%.1e, keep=%.2f, optimizer=%s, batch_norm=%d"
-              %(args.dataset, args.hidden_factor, args.epoch, args.batch_size, args.lr, args.lamda, args.keep, args.optimizer, args.batch_norm)))
+               % (args.dataset, args.hidden_factor, args.epoch, args.batch_size, args.lr, args.lamda, args.keep, args.optimizer, args.batch_norm)))
 
     # Training
     t1 = time()
-    model = FM(data.features_M, args.pretrain, make_save_file(args), args.hidden_factor, args.epoch, args.batch_size, args.lr, args.lamda, args.keep, args.optimizer, args.batch_norm, args.verbose, args.mla)
+    model = FM(data.features_M, args.pretrain, make_save_file(args), args.hidden_factor, args.epoch, args.batch_size, args.lr, args.lamda, args.keep, args.optimizer, args.batch_norm, args.verbose,
+               args.mla)
     model.train(data.Train_data, data.Validation_data, data.Test_data)
 
     # Find the best validation result across iterations
@@ -335,7 +342,7 @@ def train(args):
     best_valid_score = min(model.valid_rmse)
     best_epoch = model.valid_rmse.index(best_valid_score)
     print(("Best Iter(validation)= %d\t train = %.4f, valid = %.4f Test = %.4f [%.1f s]"
-           %(best_epoch+1, model.train_rmse[best_epoch], model.valid_rmse[best_epoch], model.test_rmse[best_epoch], time()-t1)))
+           % (best_epoch + 1, model.train_rmse[best_epoch], model.valid_rmse[best_epoch], model.test_rmse[best_epoch], time() - t1)))
 
 
 def evaluate(args):
@@ -360,11 +367,10 @@ def evaluate(args):
     dropout_keep = pretrain_graph.get_tensor_by_name('dropout_keep_fm:0')
     train_phase = pretrain_graph.get_tensor_by_name('train_phase_fm:0')
 
-
     # restore session
     onfig = tf.ConfigProto(
-            device_count = {'GPU': 0}
-            )
+        device_count={'GPU': 0}
+    )
     sess = tf.Session(config=config)
     weight_saver.restore(sess, save_file)
 
@@ -382,12 +388,11 @@ def evaluate(args):
     predictions_bounded = np.minimum(predictions_bounded, np.ones(num_example) * max(y_true))  # bound the higher values
     RMSE = math.sqrt(mean_squared_error(y_true, predictions_bounded))
 
-    print(("Test RMSE: %.4f"%(RMSE)))
-
+    print(("Test RMSE: %.4f" % (RMSE)))
 
 
 if __name__ == '__main__':
-    
+
     args = parse_args()
     # initialize the optimal parameters
     # if args.mla:

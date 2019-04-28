@@ -19,9 +19,10 @@ from sklearn.metrics import mean_squared_error
 from sklearn.metrics import accuracy_score
 from sklearn.metrics import roc_auc_score
 from time import time
-import argparse
 import LoadData as DATA
+import argparse
 from tensorflow.contrib.layers.python.layers import batch_norm as batch_norm
+
 
 #################### Arguments ####################
 def parse_args():
@@ -50,7 +51,7 @@ def parse_args():
                         help='Regularizer for attention part.')
     parser.add_argument('--lamda_attention1', type=float, default=0.0,
                         help='Regularizer for attention part.')
-  
+
     parser.add_argument('--kf', type=int, default=16,
                         help='k_f.')
     parser.add_argument('--temp', type=float, default=1.0,
@@ -66,16 +67,17 @@ def parse_args():
     parser.add_argument('--verbose', type=int, default=1,
                         help='Whether to show the performance of each epoch (0 or 1)')
     parser.add_argument('--batch_norm', type=int, default=0,
-                    help='Whether to perform batch normaization (0 or 1)')
+                        help='Whether to perform batch normaization (0 or 1)')
     parser.add_argument('--decay', type=float, default=0.999,
-                    help='Decay value for batch norm')
+                        help='Decay value for batch norm')
     parser.add_argument('--activation', nargs='?', default='relu',
-                    help='Which activation function to use for deep layers: relu, sigmoid, tanh, identity')
+                        help='Which activation function to use for deep layers: relu, sigmoid, tanh, identity')
 
     return parser.parse_args()
 
+
 class AFM(BaseEstimator, TransformerMixin):
-    def __init__(self, features_M, pretrain_flag, save_file, attention, hidden_factor, valid_dimension, activation_function, num_variable, 
+    def __init__(self, features_M, pretrain_flag, save_file, attention, hidden_factor, valid_dimension, activation_function, num_variable,
                  freeze_fm, epoch, batch_size, learning_rate, lamda_attention, lamda_attention1, kf, temp, keep, optimizer_type, batch_norm, decay, verbose, micro_level_analysis, random_seed=2016):
         # bind params to class
         self.batch_size = batch_size
@@ -116,6 +118,8 @@ class AFM(BaseEstimator, TransformerMixin):
             # Set graph level random seed
             tf.set_random_seed(self.random_seed)
             # Input data.
+            # placeholder()函数是在神经网络构建graph的时候在模型中的占位，此时并没有把要输入的数据传入模型，它只会分配必要的内存。
+            # 等建立session，在会话中，运行模型的时候通过feed_dict()函数向占位符喂入数据。
             self.train_features = tf.placeholder(tf.int32, shape=[None, None], name="train_features_afm")  # None * features_M
             self.train_labels = tf.placeholder(tf.float32, shape=[None, 1], name="train_labels_afm")  # None * 1
             self.dropout_keep = tf.placeholder(tf.float32, shape=[None], name="dropout_keep_afm")
@@ -124,62 +128,67 @@ class AFM(BaseEstimator, TransformerMixin):
             # Variables.
             self.weights = self._initialize_weights()
 
-            # Model.
-            self.nonzero_embeddings = tf.nn.embedding_lookup(self.weights['feature_embeddings'], self.train_features) # None * M' * K
-            
-            element_wise_product_list = []
-            interactions = []
+            # 嵌入部分.
+            self.nonzero_embeddings = tf.nn.embedding_lookup(self.weights['feature_embeddings'], self.train_features)  # None * M' * K
+
+			# 结对乘积部分
+            element_wise_product_list = []  # 特征方面
+            interactions = []  # 领域方面
             count = 0
             for i in range(0, self.valid_dimension):
-                for j in range(i+1, self.valid_dimension):
-                    element_wise_product_list.append(tf.multiply(self.nonzero_embeddings[:,i,:], self.nonzero_embeddings[:,j,:]))
-                    interactions.append(tf.multiply(self.weights['interaction'][i,:], self.weights['interaction'][j,:]))
+                for j in range(i + 1, self.valid_dimension):
+                    element_wise_product_list.append(tf.multiply(self.nonzero_embeddings[:, i, :], self.nonzero_embeddings[:, j, :]))
+                    interactions.append(tf.multiply(self.weights['interaction'][i, :], self.weights['interaction'][j, :]))
                     count += 1
-            self.element_wise_product = tf.stack(element_wise_product_list) # (M'*(M'-1)) * None * K
-            self.element_wise_product = tf.transpose(self.element_wise_product, perm=[1,0,2], name="element_wise_product") # None * (M'*(M'-1)) * K
-            self.interactions = tf.reduce_sum(self.element_wise_product, 2, name="interactions")
-            # _________ MLP Layer / attention part _____________
-            num_interactions = self.valid_dimension*(self.valid_dimension-1)// 2
+            self.element_wise_product = tf.stack(element_wise_product_list)  # (M'*(M'-1)) * None * K
+            self.element_wise_product = tf.transpose(self.element_wise_product, perm=[1, 0, 2], name="element_wise_product")  # None * (M'*(M'-1)) * K 高维数组转置
+            self.interactions = tf.reduce_sum(self.element_wise_product, 2, name="interactions")  # 在第二个维度上求和
+            
+			# 注意力网络权重
+            num_interactions = self.valid_dimension * (self.valid_dimension - 1) // 2
             self.num_interactions = num_interactions
+            # tf.multiply()两个矩阵中对应元素各自相乘.
+            # tf.matmul()将矩阵a乘以矩阵b,生成a * b.
+			# 计算Attention Net的权重值Tij
             if self.attention:
                 self.attention_mul = tf.reshape(tf.matmul(tf.reshape(self.element_wise_product, shape=[-1, self.hidden_factor[1]]), \
-                    self.weights['attention_W']), shape=[-1, num_interactions, self.hidden_factor[0]])
+                                                          self.weights['attention_W']), shape=[-1, num_interactions, self.hidden_factor[0]])
                 self.attention_mul = self.attention_mul / self.temp
                 self.attention_exp = tf.exp(tf.reduce_sum(tf.multiply(self.weights['attention_p'], tf.nn.relu(self.attention_mul + \
-                    self.weights['attention_b'])), 2, keep_dims=True)) # None * (M'*(M'-1)) * 1
-                self.attention_sum = tf.reduce_sum(self.attention_exp, 1, keep_dims=True) # None * 1 * 1
-                self.attention_out = tf.div(self.attention_exp, self.attention_sum, name="attention_out") # None * (M'*(M'-1)) * 1
-                self.attention_out = tf.nn.dropout(self.attention_out, self.dropout_keep[0]) # dropout
-            
-            # _________ Attention-aware Pairwise Interaction Layer _____________
-     
-            self.AFM = self.attention_out * self.element_wise_product
-            self.AFM = tf.reshape(self.AFM, [-1, num_interactions * self.hidden_factor[1]])
-            self.AFM = tf.nn.dropout(self.AFM, self.dropout_keep[1]) # dropout
-            
-            self.field_interactions = tf.stack(interactions)  
-            self.attention_interaction = tf.matmul(self.field_interactions, self.weights['factor'])
-            self.attention_interaction = tf.reshape(self.attention_interaction, [num_interactions * self.hidden_factor[1], 1])
-            self.AFM = tf.tensordot(self.AFM, self.attention_interaction, axes=1)
-            self.AFM = tf.reduce_sum(self.AFM, reduction_indices=[1])
-             
-            self.prediction = self.AFM
-            Bilinear = tf.expand_dims(self.prediction, -1)
-            self.Feature_bias = tf.reduce_sum(tf.nn.embedding_lookup(self.weights['feature_bias'], self.train_features) , 1)  # None * 1
-            Bias = self.weights['bias'] * tf.ones_like(self.train_labels)  # None * 1
-            self.out = tf.add_n([Bilinear, self.Feature_bias, Bias], name="out_afm")  # None * 1
+                                                                                                              self.weights['attention_b'])), 2, keep_dims=True))  # None * (M'*(M'-1)) * 1
+                self.attention_sum = tf.reduce_sum(self.attention_exp, 1, keep_dims=True)  # None * 1 * 1
+                self.attention_out = tf.div(self.attention_exp, self.attention_sum, name="attention_out")  # None * (M'*(M'-1)) * 1
+                self.attention_out = tf.nn.dropout(self.attention_out, self.dropout_keep[0])  # dropout
 
-            # Compute the loss.
+            # Inference Layer
+            self.AFM = self.attention_out * self.element_wise_product  # T24,T26,T46
+            self.AFM = tf.reshape(self.AFM, [-1, num_interactions * self.hidden_factor[1]])
+            self.AFM = tf.nn.dropout(self.AFM, self.dropout_keep[1])  # dropout
+
+            self.field_interactions = tf.stack(interactions) # Uf2 点乘 Uf4...
+            self.attention_interaction = tf.matmul(self.field_interactions, self.weights['factor']) # F24,F26,F46与D矩阵相乘
+            self.attention_interaction = tf.reshape(self.attention_interaction, [num_interactions * self.hidden_factor[1], 1])
+            self.AFM = tf.tensordot(self.AFM, self.attention_interaction, axes=1)  # T24 点乘 F24...
+            self.AFM = tf.reduce_sum(self.AFM, reduction_indices=[1])
+
+			# Fusion Layer / Output Layer预测函数---公式（9）
+            self.prediction = self.AFM
+            Bilinear = tf.expand_dims(self.prediction, -1)  # 公式两个求和部分
+            self.Feature_bias = tf.reduce_sum(tf.nn.embedding_lookup(self.weights['feature_bias'], self.train_features), 1)  # None * 1 公式第二部分
+            Bias = self.weights['bias'] * tf.ones_like(self.train_labels)  # None * 1 公式第三部分
+            self.out = tf.add_n([Bilinear, self.Feature_bias, Bias], name="out_afm")  # None * 1 所有的输入向量逐元素相加，最终的预测值y
+
+            # Compute the loss--->L2正则化
             if self.lamda_attention > 0:
                 self.loss = tf.nn.l2_loss(tf.subtract(self.train_labels, self.out)) + tf.contrib.layers.l2_regularizer(self.lamda_attention)(self.weights['attention_W'])  # regulizer
             else:
                 self.loss = tf.nn.l2_loss(tf.subtract(self.train_labels, self.out))
-                
+
             if self.lamda_attention1 > 0:
                 self.loss += tf.contrib.layers.l2_regularizer(self.lamda_attention1)(self.weights['interaction']) \
-                            + tf.contrib.layers.l2_regularizer(self.lamda_attention1)(self.weights['factor'])
+                             + tf.contrib.layers.l2_regularizer(self.lamda_attention1)(self.weights['factor'])
 
-            # Optimizer.
+            # Optimizer. 优化器
             if self.optimizer_type == 'AdamOptimizer':
                 self.optimizer = tf.train.AdamOptimizer(learning_rate=self.learning_rate, beta1=0.9, beta2=0.999, epsilon=1e-8).minimize(self.loss)
             elif self.optimizer_type == 'AdagradOptimizer':
@@ -189,7 +198,7 @@ class AFM(BaseEstimator, TransformerMixin):
             elif self.optimizer_type == 'MomentumOptimizer':
                 self.optimizer = tf.train.MomentumOptimizer(learning_rate=self.learning_rate, momentum=0.95).minimize(self.loss)
 
-            # init
+            # init 初始化
             self.saver = tf.train.Saver()
             init = tf.global_variables_initializer()
             self.sess = self._init_session()
@@ -198,19 +207,19 @@ class AFM(BaseEstimator, TransformerMixin):
             # number of params
             total_parameters = 0
             for variable in list(self.weights.values()):
-                shape = variable.get_shape() # shape is an array of tf.Dimension
+                shape = variable.get_shape()  # shape is an array of tf.Dimension
                 variable_parameters = 1
                 for dim in shape:
                     variable_parameters *= dim.value
                 total_parameters += variable_parameters
-            if self.verbose > 0:
+            if self.verbose > 0:  # 是否打印参数量信息
                 print("#params: %d" % total_parameters)
-    
+
     def _init_session(self):
         # adaptively growing video memory
-#         config = tf.ConfigProto()
-#         config.gpu_options.allow_growth = True
-        return tf.Session()#tf.Session(config=config)
+        #         config = tf.ConfigProto()
+        #         config.gpu_options.allow_growth = True
+        return tf.Session()  # tf.Session(config=config)
 
     def _initialize_weights(self):
         all_weights = dict()
@@ -219,7 +228,7 @@ class AFM(BaseEstimator, TransformerMixin):
         if self.pretrain_flag > 0:
             from_file = self.save_file
             # if self.micro_level_analysis:
-            from_file = self.save_file
+            # from_file = self.save_file
             print("load from {}".format(from_file))
             weight_saver = tf.train.import_meta_graph(from_file + '.meta')
             pretrain_graph = tf.get_default_graph()
@@ -244,26 +253,27 @@ class AFM(BaseEstimator, TransformerMixin):
         # attention
         interaction_factor_hidden = self.kf
         if self.attention:
-            glorot = np.sqrt(2.0 / (self.hidden_factor[0]+self.hidden_factor[1]))
+            glorot = np.sqrt(2.0 / (self.hidden_factor[0] + self.hidden_factor[1]))
+            # numpy.random.normal(loc=0.0, scale=1.0, size=None) 参数含义: loc:概率分布的均值，scale:概率分布的标准差,size:输出的shape，默认为None，只输出一个值.
             all_weights['attention_W'] = tf.Variable(
                 np.random.normal(loc=0, scale=glorot, size=(self.hidden_factor[1], self.hidden_factor[0])), dtype=np.float32, name="attention_W")  # K * AK
             all_weights['attention_b'] = tf.Variable(
                 np.random.normal(loc=0, scale=glorot, size=(1, self.hidden_factor[0])), dtype=np.float32, name="attention_b")  # 1 * AK
             all_weights['attention_p'] = tf.Variable(
-                np.random.normal(loc=0, scale=1, size=(self.hidden_factor[0])), dtype=np.float32, name="attention_p") # AK
-            num_interaction = self.valid_dimension * (self.valid_dimension - 1) // 2
+                np.random.normal(loc=0, scale=1, size=(self.hidden_factor[0])), dtype=np.float32, name="attention_p")  # AK
+            # num_interaction = self.valid_dimension * (self.valid_dimension - 1) // 2
             all_weights['interaction'] = tf.Variable(
-                np.random.normal(loc=0, scale=1, size=(self.valid_dimension, interaction_factor_hidden)), dtype=np.float32, name="interaction") # AK
+                np.random.normal(loc=0, scale=1, size=(self.valid_dimension, interaction_factor_hidden)), dtype=np.float32, name="interaction")  # AK
             all_weights['factor'] = tf.Variable(
-                np.random.normal(loc=0, scale=1, size=(interaction_factor_hidden, self.hidden_factor[1])), dtype=np.float32, name="factor") # AK
+                np.random.normal(loc=0, scale=1, size=(interaction_factor_hidden, self.hidden_factor[1])), dtype=np.float32, name="factor")  # AK
 
         return all_weights
 
     def batch_norm_layer(self, x, train_phase, scope_bn):
         bn_train = batch_norm(x, decay=self.decay, center=True, scale=True, updates_collections=None,
-            is_training=True, reuse=None, trainable=True, scope=scope_bn)
+                              is_training=True, reuse=None, trainable=True, scope=scope_bn)
         bn_inference = batch_norm(x, decay=self.decay, center=True, scale=True, updates_collections=None,
-            is_training=False, reuse=True, trainable=True, scope=scope_bn)
+                                  is_training=False, reuse=True, trainable=True, scope=scope_bn)
         z = tf.cond(train_phase, lambda: bn_train, lambda: bn_inference)
         return z
 
@@ -274,7 +284,7 @@ class AFM(BaseEstimator, TransformerMixin):
 
     def get_random_block_from_data(self, data, batch_size):  # generate a random block of training data
         start_index = np.random.randint(0, len(data['Y']) - batch_size)
-        X , Y = [], []
+        X, Y = [], []
         # forward get sample
         i = start_index
         while len(X) < batch_size and i < len(data['X']):
@@ -294,10 +304,10 @@ class AFM(BaseEstimator, TransformerMixin):
             else:
                 break
         return {'X': X, 'Y': Y}
-    
+
     def get_ordered_block_from_data(self, data, batch_size, index):  # generate a ordered block of data
-        start_index = index*batch_size
-        X , Y = [], []
+        start_index = index * batch_size
+        X, Y = [], []
         # get sample
         i = start_index
         while len(X) < batch_size and i < len(data['X']):
@@ -309,7 +319,7 @@ class AFM(BaseEstimator, TransformerMixin):
                 break
         return {'X': X, 'Y': Y}
 
-    def shuffle_in_unison_scary(self, a, b): # shuffle two lists simutaneously
+    def shuffle_in_unison_scary(self, a, b):  # shuffle two lists simutaneously
         rng_state = np.random.get_state()
         np.random.shuffle(a)
         np.random.set_state(rng_state)
@@ -321,9 +331,8 @@ class AFM(BaseEstimator, TransformerMixin):
             t2 = time()
             init_train = self.evaluate(Train_data)
             init_valid = self.evaluate(Validation_data)
-            init_test  = self.evaluate(Test_data)
-            print(("Init: \t train=%.4f, validation=%.4f, test=%.4f [%.1f s]" %(init_train, init_valid, init_test, time()-t2)))
-
+            init_test = self.evaluate(Test_data)
+            print(("Init: \t train=%.4f, validation=%.4f, test=%.4f [%.1f s]" % (init_train, init_valid, init_test, time() - t2)))
 
         for epoch in range(self.epoch):
             t1 = time()
@@ -339,14 +348,14 @@ class AFM(BaseEstimator, TransformerMixin):
             # evaluate training and validation datasets
             train_result = self.evaluate(Train_data)
             valid_result = self.evaluate(Validation_data)
-            test_result  = self.evaluate(Test_data)
+            test_result = self.evaluate(Test_data)
 
             self.train_rmse.append(train_result)
             self.valid_rmse.append(valid_result)
             self.test_rmse.append(test_result)
-            if self.verbose > 0 and epoch%self.verbose == 0:
+            if self.verbose > 0 and epoch % self.verbose == 0:
                 print(("Epoch %d [%.1f s]\ttrain=%.4f, validation=%.4f, Test=%.4f [%.1f s]"
-                      %(epoch+1, t2-t1, train_result, valid_result, test_result, time()-t2)))
+                       % (epoch + 1, t2 - t1, train_result, valid_result, test_result, time() - t2)))
 
             # test_result = self.evaluate(Test_data)
             # print("Epoch %d [%.1f s]\ttest=%.4f [%.1f s]"
@@ -354,9 +363,9 @@ class AFM(BaseEstimator, TransformerMixin):
             if self.eva_termination(self.valid_rmse):
                 break
 
-#         if self.pretrain_flag < 0 or self.pretrain_flag == 2:
-#             print("Save model to file as pretrain.")
-#             self.saver.save(self.sess, self.save_file)
+    #         if self.pretrain_flag < 0 or self.pretrain_flag == 2:
+    #             print("Save model to file as pretrain.")
+    #             self.saver.save(self.sess, self.save_file)
 
     def eva_termination(self, valid):
         if len(valid) > 5:
@@ -376,7 +385,7 @@ class AFM(BaseEstimator, TransformerMixin):
             num_batch = len(batch_xs['Y'])
             feed_dict = {self.train_features: batch_xs['X'], self.train_labels: [[y] for y in batch_xs['Y']], self.dropout_keep: list(1.0 for i in range(len(self.keep))), self.train_phase: False}
             a_exp, a_sum, a_out, batch_out = self.sess.run((self.attention_exp, self.attention_sum, self.attention_out, self.out), feed_dict=feed_dict)
-            
+
             if batch_index == 0:
                 y_pred = np.reshape(batch_out, (num_batch,))
             else:
@@ -384,47 +393,51 @@ class AFM(BaseEstimator, TransformerMixin):
             # fetch the next batch
             batch_index += 1
             batch_xs = self.get_ordered_block_from_data(data, self.batch_size, batch_index)
-        
-#         field_out, batch_out = self.sess.run((self.attention_interaction, self.out), feed_dict=feed_dict)
-#         analysis = np.reshape(field_out, [self.num_interactions, self.hidden_factor[1]])
-#         analysis = np.square(analysis)
-#         analysis = np.sum(analysis, axis=1)
-#         print(analysis)
+
+        #         field_out, batch_out = self.sess.run((self.attention_interaction, self.out), feed_dict=feed_dict)
+        #         analysis = np.reshape(field_out, [self.num_interactions, self.hidden_factor[1]])
+        #         analysis = np.square(analysis)
+        #         analysis = np.sum(analysis, axis=1)
+        #         print(analysis)
         y_true = np.reshape(data['Y'], (num_example,))
 
         predictions_bounded = np.maximum(y_pred, np.ones(num_example) * min(y_true))  # bound the lower values
         predictions_bounded = np.minimum(predictions_bounded, np.ones(num_example) * max(y_true))  # bound the higher values
-#         accuracy = accuracy_score(y_true, predictions_bounded > 0.5)
-#         return accuracy
-#         AUC = roc_auc_score(y_true, predictions_bounded)
-#         return AUC
+        #         accuracy = accuracy_score(y_true, predictions_bounded > 0.5)
+        #         return accuracy
+        #         AUC = roc_auc_score(y_true, predictions_bounded)
+        #         return AUC
         RMSE = math.sqrt(mean_squared_error(y_true, predictions_bounded))
         return RMSE
 
+
 def make_save_file(args):
-    pretrain_path = '../pretrain/fm_%s_%d' %(args.dataset, eval(args.hidden_factor)[1])
+    pretrain_path = '../pretrain/fm_%s_%d' % (args.dataset, eval(args.hidden_factor)[1])
     if args.mla:
         pretrain_path += '_mla'
     if not os.path.exists(pretrain_path):
         os.makedirs(pretrain_path)
-    save_file = pretrain_path+'/%s_%d' %(args.dataset, eval(args.hidden_factor)[1])
+    save_file = pretrain_path + '/%s_%d' % (args.dataset, eval(args.hidden_factor)[1])
     return save_file
+
 
 def train(args):
     # Data loading
     data = DATA.LoadData(args.path, args.dataset)
     if args.verbose > 0:
-        print(("IFM: dataset=%s, factors=%s, attention=%d, freeze_fm=%d, #epoch=%d, batch=%d, lr=%.4f, lambda_attention=%.1e, lambda_attention1=%.1e, kf=%d, temp=%.1e, keep=%s, optimizer=%s, batch_norm=%d, decay=%f, activation=%s"
-              %(args.dataset, args.hidden_factor, args.attention, args.freeze_fm, args.epoch, args.batch_size, args.lr, args.lamda_attention, args.lamda_attention1, args.kf, args.temp, args.keep, args.optimizer, 
-              args.batch_norm, args.decay, args.activation)))
+        print((
+                "IFM: dataset=%s, factors=%s, attention=%d, freeze_fm=%d, #epoch=%d, batch=%d, lr=%.4f, lambda_attention=%.1e, lambda_attention1=%.1e, kf=%d, temp=%.1e, keep=%s, optimizer=%s, batch_norm=%d, decay=%f, activation=%s"
+                % (args.dataset, args.hidden_factor, args.attention, args.freeze_fm, args.epoch, args.batch_size, args.lr, args.lamda_attention, args.lamda_attention1, args.kf, args.temp,
+                   args.keep, args.optimizer,
+                   args.batch_norm, args.decay, args.activation)))
     activation_function = tf.nn.relu
     if args.activation == 'sigmoid':
         activation_function = tf.sigmoid
     elif args.activation == 'tanh':
-        activation_function == tf.tanh
+        activation_function = tf.tanh
     elif args.activation == 'identity':
         activation_function = tf.identity
-    
+
     save_file = make_save_file(args)
     # Training
     t1 = time()
@@ -432,24 +445,25 @@ def train(args):
     num_variable = data.truncate_features()
     if args.mla:
         args.freeze_fm = 1
-    model = AFM(data.features_M, args.pretrain, save_file, args.attention, eval(args.hidden_factor), args.valid_dimen, 
-        activation_function, num_variable, args.freeze_fm, args.epoch, args.batch_size, args.lr, args.lamda_attention, args.lamda_attention1, args.kf, args.temp, eval(args.keep), args.optimizer, 
-        args.batch_norm, args.decay, args.verbose, args.mla)
-    
+    model = AFM(data.features_M, args.pretrain, save_file, args.attention, eval(args.hidden_factor), args.valid_dimen,
+                activation_function, num_variable, args.freeze_fm, args.epoch, args.batch_size, args.lr, args.lamda_attention, args.lamda_attention1, args.kf, args.temp, eval(args.keep),
+                args.optimizer,
+                args.batch_norm, args.decay, args.verbose, args.mla)
+
     model.train(data.Train_data, data.Validation_data, data.Test_data)
-    
+
     # Find the best validation result across iterations
-    best_valid_score = 0
     best_valid_score = min(model.valid_rmse)
     best_epoch = model.valid_rmse.index(best_valid_score)
-    print(("Best Iter(validation)= %d\t train = %.4f, valid = %.4f Test = %.4f [%.1f s]" 
-           %(best_epoch+1, model.train_rmse[best_epoch], model.valid_rmse[best_epoch], model.test_rmse[best_epoch], time()-t1)))
+    print(("Best Iter(validation)= %d\t train = %.4f, valid = %.4f Test = %.4f [%.1f s]"
+           % (best_epoch + 1, model.train_rmse[best_epoch], model.valid_rmse[best_epoch], model.test_rmse[best_epoch], time() - t1)))
+
 
 def evaluate(args):
     # load test data
     data = DATA.LoadData(args.path, args.dataset).Test_data
     save_file = make_save_file(args)
-    
+
     # load the graph
     weight_saver = tf.train.import_meta_graph(save_file + '.meta')
     pretrain_graph = tf.get_default_graph()
@@ -469,39 +483,39 @@ def evaluate(args):
 
     # tensors and placeholders for fm
     if args.mla:
-         out_of_fm = pretrain_graph.get_tensor_by_name('out_fm:0')
-         element_wise_product = pretrain_graph.get_tensor_by_name('element_wise_product:0')
-         train_features_fm = pretrain_graph.get_tensor_by_name('train_features_fm:0')
-         train_labels_fm = pretrain_graph.get_tensor_by_name('train_labels_fm:0')
-         dropout_keep_fm = pretrain_graph.get_tensor_by_name('dropout_keep_fm:0')
-         train_phase_fm = pretrain_graph.get_tensor_by_name('train_phase_fm:0')
+        out_of_fm = pretrain_graph.get_tensor_by_name('out_fm:0')
+        element_wise_product = pretrain_graph.get_tensor_by_name('element_wise_product:0')
+        train_features_fm = pretrain_graph.get_tensor_by_name('train_features_fm:0')
+        train_labels_fm = pretrain_graph.get_tensor_by_name('train_labels_fm:0')
+        dropout_keep_fm = pretrain_graph.get_tensor_by_name('dropout_keep_fm:0')
+        train_phase_fm = pretrain_graph.get_tensor_by_name('train_phase_fm:0')
 
     # restore session
-    #config = tf.ConfigProto()
-    #config.gpu_options.allow_growth = True
-    #sess = tf.Session(config=config)
+    # config = tf.ConfigProto()
+    # config.gpu_options.allow_growth = True
+    # sess = tf.Session(config=config)
     sess = tf.Session()
     weight_saver.restore(sess, save_file)
 
     # start evaluation
     num_example = len(data['Y'])
     if args.mla:
-        feed_dict = {train_features_afm: data['X'], train_labels_afm: [[y] for y in data['Y']], dropout_keep_afm: [1.0,1.0], train_phase_afm: False, \
+        feed_dict = {train_features_afm: data['X'], train_labels_afm: [[y] for y in data['Y']], dropout_keep_afm: [1.0, 1.0], train_phase_afm: False, \
                      train_features_fm: data['X'], train_labels_fm: [[y] for y in data['Y']], dropout_keep_fm: 1.0, train_phase_fm: False}
         ao, inter, out_fm, predictions = sess.run((attention_out, interactions, out_of_fm, out_of_afm), feed_dict=feed_dict)
     else:
-        feed_dict = {train_features_afm: data['X'], train_labels_afm: [[y] for y in data['Y']], dropout_keep_afm: [1.0,1.0], train_phase_afm: False}
+        feed_dict = {train_features_afm: data['X'], train_labels_afm: [[y] for y in data['Y']], dropout_keep_afm: [1.0, 1.0], train_phase_afm: False}
         predictions = sess.run((out_of_afm), feed_dict=feed_dict)
 
     # calculate rmse
     y_pred_afm = np.reshape(predictions, (num_example,))
     y_true = np.reshape(data['Y'], (num_example,))
-    
+
     predictions_bounded = np.maximum(y_pred_afm, np.ones(num_example) * min(y_true))  # bound the lower values
     predictions_bounded = np.minimum(predictions_bounded, np.ones(num_example) * max(y_true))  # bound the higher values
     RMSE = math.sqrt(mean_squared_error(y_true, predictions_bounded))
 
-    print(("Test RMSE: %.4f"%(RMSE)))
+    print(("Test RMSE: %.4f" % (RMSE)))
 
     if args.mla:
         # select significant cases
@@ -513,8 +527,10 @@ def evaluate(args):
 
         ids = np.arange(0, num_example, 1)
 
-        sorted_ids = sorted(ids, key=lambda k: pred_abs_afm[k]+abs(ao[k][0]*ao[k][1]*ao[k][2]))
+        sorted_ids = sorted(ids, key=lambda k: pred_abs_afm[k] + abs(ao[k][0] * ao[k][1] * ao[k][2]))
         # sorted_ids = sorted(ids, key=lambda k: abs(ao[k][0]*ao[k][1]*ao[k][2]))
+
+
 #         for i in range(3):
 #             _id = sorted_ids[i]
 #             print(('## %d: %d'%(i+1, y_true[_id])))
@@ -525,10 +541,8 @@ def evaluate(args):
 #                           ao[_id][2], inter[_id][2], y_pred_afm[_id])))
 
 
-    
-
 if __name__ == '__main__':
-    #os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
+    # os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
     args = parse_args()
     # if args.mla:
     #     args.lr = 0.1
@@ -543,6 +557,5 @@ if __name__ == '__main__':
         train(args)
     elif args.process == 'evaluate':
         evaluate(args)
-        
-    print("%f used." % (time() - start))
 
+    print("%f used." % (time() - start))
